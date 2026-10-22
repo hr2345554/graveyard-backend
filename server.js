@@ -7,19 +7,17 @@ import bcrypt from 'bcryptjs';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoSanitize from 'express-mongo-sanitize';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
-// Yeh sirf ek baar aayega ab
 const app = express();
 
 // ==========================================
 // SECURITY MIDDLEWARES
 // ==========================================
-// 1. HTTP Headers secure karna
 app.use(helmet());
 
-// 2. Rate Limiting (15 minute mein max 100 requests per IP)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 100, 
@@ -27,16 +25,13 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
-// 3. NoSQL Injection se bachne ke liye
 app.use(mongoSanitize());
 
-// 4. CORS (Frontend ko connect hone dena)
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5173'], // Vite 5173 use karta hai, CRA 3000
+  origin: ['http://localhost:3000', 'http://localhost:5173'],
   credentials: true
 }));
 
-// Body parser (JSON data padhne ke liye)
 app.use(express.json({ limit: '10kb' }));
 
 
@@ -47,6 +42,8 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  resetCode: { type: String, default: null },
+  resetCodeExpires: { type: Date, default: null }
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {
@@ -70,7 +67,6 @@ const subscriptionSchema = new mongoose.Schema({
   billingFrequency: { type: String, enum: ['weekly', 'monthly', 'quarterly', 'yearly'], required: true },
   category: { type: String, required: true },
   status: { type: String, enum: ['active', 'cancelled', 'paused'], default: 'active' },
-  
   websiteUrl: { type: String, default: '' },
   startDate: { type: Date },
   renewalDate: { type: Date },
@@ -106,7 +102,7 @@ const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expires
 
 
 // ==========================================
-// 3. AUTH ROUTES
+// 3. AUTH ROUTES (Login/Register)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body;
@@ -130,6 +126,87 @@ app.post('/api/auth/login', async (req, res) => {
     } else {
       res.status(401).json({ message: 'Invalid email or password' });
     }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+
+// ==========================================
+// 3.5 NODEMAILER SETUP & PASSWORD RESET ROUTES
+// ==========================================
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
+
+// Route 1: Email par code bhejna
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'Yeh email registered nahi hai.' });
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    user.resetCode = code;
+    user.resetCodeExpires = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Password Reset Code - Subscription Graveyard',
+      html: `
+        <div style="font-family: Arial; padding: 20px; text-align: center;">
+          <h2>Password Reset</h2>
+          <p>Aapka password reset code yeh hai:</p>
+          <h1 style="color: #7C3AED; font-size: 40px; letter-spacing: 5px;">${code}</h1>
+          <p>Yeh code 10 minute ke liye valid hai.</p>
+        </div>
+      `
+    });
+
+    res.json({ message: 'Code email par bhej diya gaya hai.' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Route 2: Code verify karke new password set karna
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email, code, newPassword } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'User nahi mila.' });
+    if (user.resetCode !== code) return res.status(400).json({ message: 'Ghalat code dala hai.' });
+    if (user.resetCodeExpires < Date.now()) return res.status(400).json({ message: 'Code expire ho gaya hai.' });
+
+    user.password = newPassword;
+    user.resetCode = null;
+    user.resetCodeExpires = null;
+    await user.save();
+
+    res.json({ message: 'Password successfully change ho gaya!' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Route 3: DELETE ACCOUNT (Naya Add kiya hai)
+app.delete('/api/auth/delete-account', protect, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Pehle user ki saari subscriptions delete karein
+    await Subscription.deleteMany({ user: userId });
+    
+    // Phir user ka account delete karein
+    await User.findByIdAndDelete(userId);
+    
+    res.json({ message: 'Account and all associated data deleted successfully.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
