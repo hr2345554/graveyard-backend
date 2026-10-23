@@ -14,16 +14,21 @@ dotenv.config();
 const app = express();
 
 // ==========================================
-// 1. CORS (Sabse pehle hona zaroori hai)
+// 1. CORS (Live Vercel URL added)
 // ==========================================
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173'],
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:5173', 
+    'http://127.0.0.1:3000', 
+    'http://127.0.0.1:5173',
+    'https://subscription-graveyard-three.vercel.app' // <-- Aapki live site
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Preflight requests (OPTIONS) ko explicitly handle karein
 app.options('*', cors());
 
 // ==========================================
@@ -33,7 +38,6 @@ app.use(helmet({
   crossOriginResourcePolicy: false
 }));
 
-// Rate Limit (Development ke liye 10000 kar diya hai taake 429 error na aaye)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 10000, 
@@ -264,15 +268,14 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
 });
 
 // ==========================================
-// 8. SERVER START & DB CONNECT
+// 8. SERVER START & DB CONNECT (Vercel Ready)
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
 
-const PORT = process.env.PORT || 5000;
-
+// Vercel par DB connect karna
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log('✅ MongoDB Connected Successfully');
-    app.listen(PORT, () => console.log(`🚀 Server running securely on port ${PORT}`));
-  })
+  .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch((err) => console.log('❌ MongoDB connection error:', err));
+
+// Vercel ke liye app export karna zaroori hai (app.listen nahi chalega)
+export default app;
