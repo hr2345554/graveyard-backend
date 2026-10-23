@@ -14,29 +14,38 @@ dotenv.config();
 const app = express();
 
 // ==========================================
-// SECURITY MIDDLEWARES
+// 1. CORS (Sabse pehle hona zaroori hai)
 // ==========================================
-app.use(helmet());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
+// Preflight requests (OPTIONS) ko explicitly handle karein
+app.options('*', cors());
+
+// ==========================================
+// 2. SECURITY MIDDLEWARES
+// ==========================================
+app.use(helmet({
+  crossOriginResourcePolicy: false
+}));
+
+// Rate Limit (Development ke liye 10000 kar diya hai taake 429 error na aaye)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
-  max: 100, 
+  max: 10000, 
   message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api', limiter);
 
 app.use(mongoSanitize());
-
-app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5173'],
-  credentials: true
-}));
-
 app.use(express.json({ limit: '10kb' }));
 
-
 // ==========================================
-// 1. DATABASE MODELS
+// 3. DATABASE MODELS
 // ==========================================
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -77,9 +86,8 @@ const subscriptionSchema = new mongoose.Schema({
 
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
 
-
 // ==========================================
-// 2. AUTH MIDDLEWARE
+// 4. AUTH MIDDLEWARE
 // ==========================================
 const protect = async (req, res, next) => {
   let token;
@@ -100,9 +108,8 @@ const protect = async (req, res, next) => {
 
 const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-
 // ==========================================
-// 3. AUTH ROUTES (Login/Register)
+// 5. AUTH ROUTES (Login/Register)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body;
@@ -131,9 +138,8 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-
 // ==========================================
-// 3.5 NODEMAILER SETUP & PASSWORD RESET ROUTES
+// 6. NODEMAILER & PASSWORD RESET ROUTES
 // ==========================================
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -143,7 +149,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Route 1: Email par code bhejna
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   try {
@@ -175,7 +180,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Route 2: Code verify karke new password set karna
 app.post('/api/auth/reset-password', async (req, res) => {
   const { email, code, newPassword } = req.body;
   try {
@@ -195,26 +199,19 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// Route 3: DELETE ACCOUNT (Naya Add kiya hai)
 app.delete('/api/auth/delete-account', protect, async (req, res) => {
   try {
     const userId = req.user._id;
-    
-    // Pehle user ki saari subscriptions delete karein
     await Subscription.deleteMany({ user: userId });
-    
-    // Phir user ka account delete karein
     await User.findByIdAndDelete(userId);
-    
     res.json({ message: 'Account and all associated data deleted successfully.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-
 // ==========================================
-// 4. SUBSCRIPTION ROUTES
+// 7. SUBSCRIPTION ROUTES
 // ==========================================
 app.get('/api/subscriptions', protect, async (req, res) => {
   try {
@@ -266,9 +263,8 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
   }
 });
 
-
 // ==========================================
-// 5. SERVER START & DB CONNECT
+// 8. SERVER START & DB CONNECT
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
 
