@@ -14,7 +14,7 @@ dotenv.config();
 const app = express();
 
 // ==========================================
-// 1. CORS (Live Vercel URL added)
+// 1. CORS (Updated with your NEW live Vercel URL)
 // ==========================================
 app.use(cors({
   origin: [
@@ -22,13 +22,14 @@ app.use(cors({
     'http://localhost:5173', 
     'http://127.0.0.1:3000', 
     'http://127.0.0.1:5173',
-    'https://subscription-graveyard-three.vercel.app' // <-- Aapki live site
+    'https://subscription-graveyard-five.vercel.app' // <-- Aapki NAYI live site
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Preflight requests handle karne ke liye
 app.options('*', cors());
 
 // ==========================================
