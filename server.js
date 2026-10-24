@@ -13,6 +13,9 @@ dotenv.config();
 
 const app = express();
 
+// Vercel Proxy ke liye zaroori hai (Rate limit error fix)
+app.set('trust proxy', 1);
+
 // ==========================================
 // 1. CORS (Updated with your NEW live Vercel URL)
 // ==========================================
@@ -29,7 +32,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Preflight requests handle karne ke liye
 app.options('*', cors());
 
 // ==========================================
@@ -39,10 +41,15 @@ app.use(helmet({
   crossOriginResourcePolicy: false
 }));
 
+// Rate Limit (Fixed for Vercel Proxy)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 10000, 
-  message: 'Too many requests from this IP, please try again later.'
+  message: 'Too many requests from this IP, please try again later.',
+  validate: {
+    xForwardedForHeader: false, // Vercel proxy error ko ignore karega
+    forwardedHeader: false
+  }
 });
 app.use('/api', limiter);
 
@@ -269,14 +276,48 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
 });
 
 // ==========================================
-// 8. SERVER START & DB CONNECT (Vercel Ready)
+// 8. SERVER START & DB CONNECT (Vercel Serverless Fix)
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
 
-// Vercel par DB connect karna
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected Successfully'))
-  .catch((err) => console.log('❌ MongoDB connection error:', err));
+// Vercel Serverless ke liye Global Connection Cache
+let cached = global.mongoose;
 
-// Vercel ke liye app export karna zaroori hai (app.listen nahi chalega)
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
+async function connectDB() {
+  if (cached.conn) return cached.conn;
+
+  if (!cached.promise) {
+    const opts = { bufferCommands: false };
+    cached.promise = mongoose.connect(process.env.MONGO_URI, opts).then((mongoose) => {
+      console.log('✅ MongoDB Connected Successfully');
+      return mongoose;
+    });
+  }
+  
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    console.error('❌ MongoDB connection error:', e);
+    throw e;
+  }
+
+  return cached.conn;
+}
+
+// Middleware taake har request se pehle DB connect ho
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    res.status(500).json({ message: 'Database connection failed' });
+  }
+});
+
+// Vercel ke liye app export karna zaroori hai
 export default app;
