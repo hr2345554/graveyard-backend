@@ -17,7 +17,7 @@ const app = express();
 app.set('trust proxy', 1);
 
 // ==========================================
-// 1. CORS (Updated with your NEW live Vercel URL)
+// 1. CORS
 // ==========================================
 app.use(cors({
   origin: [
@@ -25,7 +25,7 @@ app.use(cors({
     'http://localhost:5173', 
     'http://127.0.0.1:3000', 
     'http://127.0.0.1:5173',
-    'https://subscription-graveyard-five.vercel.app' // <-- Aapki NAYI live site
+    'https://subscription-graveyard-five.vercel.app' // Aapki live site
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -41,15 +41,13 @@ app.use(helmet({
   crossOriginResourcePolicy: false
 }));
 
-// Rate Limit (Fixed for Vercel Proxy)
+// Rate Limit (Proxy issue fixed)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 10000, 
   message: 'Too many requests from this IP, please try again later.',
-  validate: {
-    xForwardedForHeader: false, // Vercel proxy error ko ignore karega
-    forwardedHeader: false
-  }
+  standardHeaders: true, 
+  legacyHeaders: false, 
 });
 app.use('/api', limiter);
 
@@ -57,7 +55,49 @@ app.use(mongoSanitize());
 app.use(express.json({ limit: '10kb' }));
 
 // ==========================================
-// 3. DATABASE MODELS
+// 3. DATABASE CONNECTION (Vercel Serverless Fix)
+// SABSE ZAROORI: Yeh routes se PEHLE hona chahiye!
+// ==========================================
+let cached = global.mongoose;
+
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
+async function connectDB() {
+  if (cached.conn) return cached.conn;
+
+  if (!cached.promise) {
+    const opts = { bufferCommands: false };
+    cached.promise = mongoose.connect(process.env.MONGO_URI, opts).then((mongoose) => {
+      console.log('✅ MongoDB Connected Successfully');
+      return mongoose;
+    });
+  }
+  
+  try {
+    cached.conn = await cached.promise;
+  } catch (e) {
+    cached.promise = null;
+    console.error('❌ MongoDB connection error:', e);
+    throw e;
+  }
+
+  return cached.conn;
+}
+
+// Middleware taake har request se pehle DB connect ho
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    res.status(500).json({ message: 'Database connection failed. Check MONGO_URI in Vercel.' });
+  }
+});
+
+// ==========================================
+// 4. DATABASE MODELS
 // ==========================================
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -99,7 +139,7 @@ const subscriptionSchema = new mongoose.Schema({
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
 
 // ==========================================
-// 4. AUTH MIDDLEWARE
+// 5. AUTH MIDDLEWARE
 // ==========================================
 const protect = async (req, res, next) => {
   let token;
@@ -121,7 +161,7 @@ const protect = async (req, res, next) => {
 const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
 // ==========================================
-// 5. AUTH ROUTES (Login/Register)
+// 6. AUTH ROUTES (Login/Register)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body;
@@ -151,7 +191,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ==========================================
-// 6. NODEMAILER & PASSWORD RESET ROUTES
+// 7. NODEMAILER & PASSWORD RESET ROUTES
 // ==========================================
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -223,7 +263,7 @@ app.delete('/api/auth/delete-account', protect, async (req, res) => {
 });
 
 // ==========================================
-// 7. SUBSCRIPTION ROUTES
+// 8. SUBSCRIPTION ROUTES
 // ==========================================
 app.get('/api/subscriptions', protect, async (req, res) => {
   try {
@@ -276,48 +316,9 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
 });
 
 // ==========================================
-// 8. SERVER START & DB CONNECT (Vercel Serverless Fix)
+// 9. SERVER START
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
-
-// Vercel Serverless ke liye Global Connection Cache
-let cached = global.mongoose;
-
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
-}
-
-async function connectDB() {
-  if (cached.conn) return cached.conn;
-
-  if (!cached.promise) {
-    const opts = { bufferCommands: false };
-    cached.promise = mongoose.connect(process.env.MONGO_URI, opts).then((mongoose) => {
-      console.log('✅ MongoDB Connected Successfully');
-      return mongoose;
-    });
-  }
-  
-  try {
-    cached.conn = await cached.promise;
-  } catch (e) {
-    cached.promise = null;
-    console.error('❌ MongoDB connection error:', e);
-    throw e;
-  }
-
-  return cached.conn;
-}
-
-// Middleware taake har request se pehle DB connect ho
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (error) {
-    res.status(500).json({ message: 'Database connection failed' });
-  }
-});
 
 // Vercel ke liye app export karna zaroori hai
 export default app;
