@@ -138,7 +138,7 @@ const subscriptionSchema = new mongoose.Schema({
   sharedWith: [{
     email: { type: String, required: true },
     amountOwed: { type: Number, required: true },
-    status: { type: String, enum: ['pending', 'accepted'], default: 'pending' }, // 🌟 NAYA FIELD
+    status: { type: String, enum: ['pending', 'accepted'], default: 'pending' }, 
     hasPaid: { type: Boolean, default: false }
   }]
 }, { timestamps: true });
@@ -459,6 +459,38 @@ app.patch('/api/splits/:id/pay', protect, async (req, res) => {
     await sub.save();
     
     res.json({ message: 'Marked as paid', friend });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// 🌟 4. REMOVE / LEAVE SPLIT (Owner ya Friend dono kar sakte hain)
+app.delete('/api/splits/:id', protect, async (req, res) => {
+  try {
+    const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
+    if (!sub) return res.status(404).json({ message: 'Split not found' });
+    
+    const friend = sub.sharedWith.id(req.params.id);
+    if (!friend) return res.status(404).json({ message: 'Split not found' });
+    
+    // Check karein ke request bhejne wala Owner hai ya khud Friend
+    const isOwner = sub.user.toString() === req.user._id.toString();
+    const isFriend = friend.email === req.user.email;
+
+    if (!isOwner && !isFriend) {
+      return res.status(401).json({ message: 'Not authorized to remove this.' });
+    }
+
+    // Array se remove karein
+    sub.sharedWith.pull({ _id: req.params.id });
+    
+    // Agar koi dost nahi bacha, toh isShared false kar dein
+    if (sub.sharedWith.length === 0) {
+      sub.isShared = false;
+    }
+    
+    await sub.save();
+    res.json({ message: 'Removed successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
