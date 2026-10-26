@@ -138,6 +138,7 @@ const subscriptionSchema = new mongoose.Schema({
   sharedWith: [{
     email: { type: String, required: true },
     amountOwed: { type: Number, required: true },
+    status: { type: String, enum: ['pending', 'accepted'], default: 'pending' }, // 🌟 NAYA FIELD
     hasPaid: { type: Boolean, default: false }
   }]
 }, { timestamps: true });
@@ -405,7 +406,8 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
             subscription: sub,
             owner: sub.user,
             amountOwed: friend.amountOwed,
-            status: friend.hasPaid ? 'paid' : 'pending'
+            status: friend.status, // 🌟 Ab status bhej rahe hain (pending / accepted)
+            hasPaid: friend.hasPaid // 🌟 Payment status
           });
         }
       });
@@ -417,7 +419,29 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
   }
 });
 
-// 2. Pay Now button (Paid mark karna)
+// 2. Accept Invitation
+app.patch('/api/splits/:id/accept', protect, async (req, res) => {
+  try {
+    const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
+    if (!sub) return res.status(404).json({ message: 'Split not found' });
+    
+    const friend = sub.sharedWith.id(req.params.id);
+    if (!friend) return res.status(404).json({ message: 'Split not found' });
+    
+    if (friend.email !== req.user.email) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    friend.status = 'accepted'; // 🌟 Status update
+    await sub.save();
+    
+    res.json({ message: 'Accepted successfully', friend });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// 3. Pay Now button (Paid mark karna)
 app.patch('/api/splits/:id/pay', protect, async (req, res) => {
   try {
     const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
@@ -454,7 +478,7 @@ app.get('/api/cron/reminders', async (req, res) => {
 
     for (const sub of sharedSubs) {
       for (const friend of sub.sharedWith) {
-        if (!friend.hasPaid) {
+        if (friend.status === 'accepted' && !friend.hasPaid) {
           await transporter.sendMail({
             from: process.env.EMAIL_USER,
             to: friend.email,
