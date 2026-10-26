@@ -322,7 +322,7 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
 });
 
 // ==========================================
-// 9. WORTH IT & SPLIT ROUTES
+// 9. WORTH IT & SPLIT ROUTES (OWNER)
 // ==========================================
 app.patch('/api/subscriptions/:id/rate', protect, async (req, res) => {
   try {
@@ -366,11 +366,68 @@ app.patch('/api/subscriptions/:id/split', protect, async (req, res) => {
 });
 
 // ==========================================
-// 🌟 10. VERCEL CRON JOB: SPLIT REMINDER EMAILS
+// 🌟 10. SHARED WITH ME ROUTES (FRIEND KE LIYE)
+// ==========================================
+
+// 1. Dost ki list (Jo usko share hui hain)
+app.get('/api/splits/shared-with-me', protect, async (req, res) => {
+  try {
+    // Un saari subscriptions ko dhoondein jahan dost ka email sharedWith mein ho
+    const subs = await Subscription.find({ 'sharedWith.email': req.user.email })
+      .populate('user', 'name email'); // Owner ki details laayein
+    
+    const sharedSplits = [];
+    
+    subs.forEach(sub => {
+      sub.sharedWith.forEach(friend => {
+        if (friend.email === req.user.email) {
+          sharedSplits.push({
+            _id: friend._id, // Subdocument ki ID
+            subscription: sub, // Poori subscription detail
+            owner: sub.user, // Jisne share ki
+            amountOwed: friend.amountOwed,
+            status: friend.hasPaid ? 'paid' : 'pending'
+          });
+        }
+      });
+    });
+    
+    res.json(sharedSplits);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// 2. Pay Now button (Paid mark karna)
+app.patch('/api/splits/:id/pay', protect, async (req, res) => {
+  try {
+    // Us subscription ko dhoondein jiske andar yeh split ID ho
+    const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
+    
+    if (!sub) return res.status(404).json({ message: 'Split not found' });
+
+    const friend = sub.sharedWith.id(req.params.id);
+    if (!friend) return res.status(404).json({ message: 'Split not found' });
+    
+    // Security Check: Kya paid karne wala wahi dost hai?
+    if (friend.email !== req.user.email) {
+      return res.status(401).json({ message: 'You are not authorized to pay this.' });
+    }
+
+    friend.hasPaid = true;
+    await sub.save();
+    
+    res.json({ message: 'Marked as paid', friend });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ==========================================
+// 11. VERCEL CRON JOB: SPLIT REMINDER EMAILS
 // ==========================================
 app.get('/api/cron/reminders', async (req, res) => {
   try {
-    // Sirf Vercel ke cron se request aane dein (Security)
     if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
        return res.status(401).json({ message: 'Unauthorized' });
     }
@@ -406,7 +463,7 @@ app.get('/api/cron/reminders', async (req, res) => {
 });
 
 // ==========================================
-// 11. SERVER START
+// 12. SERVER START
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
 
