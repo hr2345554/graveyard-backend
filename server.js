@@ -196,6 +196,26 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// 🌟 NAYA ROUTE: User ko Search karna (Split Modal ke liye)
+app.get('/api/auth/search', protect, async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query) return res.json([]);
+
+    const users = await User.find({
+      $or: [
+        { name: { $regex: query, $options: 'i' } },
+        { email: { $regex: query, $options: 'i' } }
+      ],
+      _id: { $ne: req.user._id } // Khud ko list se hata dein
+    }).select('_id name email').limit(5);
+
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // ==========================================
 // 7. NODEMAILER & PASSWORD RESET ROUTES
 // ==========================================
@@ -372,9 +392,8 @@ app.patch('/api/subscriptions/:id/split', protect, async (req, res) => {
 // 1. Dost ki list (Jo usko share hui hain)
 app.get('/api/splits/shared-with-me', protect, async (req, res) => {
   try {
-    // Un saari subscriptions ko dhoondein jahan dost ka email sharedWith mein ho
     const subs = await Subscription.find({ 'sharedWith.email': req.user.email })
-      .populate('user', 'name email'); // Owner ki details laayein
+      .populate('user', 'name email'); 
     
     const sharedSplits = [];
     
@@ -382,9 +401,9 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
       sub.sharedWith.forEach(friend => {
         if (friend.email === req.user.email) {
           sharedSplits.push({
-            _id: friend._id, // Subdocument ki ID
-            subscription: sub, // Poori subscription detail
-            owner: sub.user, // Jisne share ki
+            _id: friend._id,
+            subscription: sub,
+            owner: sub.user,
             amountOwed: friend.amountOwed,
             status: friend.hasPaid ? 'paid' : 'pending'
           });
@@ -401,7 +420,6 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
 // 2. Pay Now button (Paid mark karna)
 app.patch('/api/splits/:id/pay', protect, async (req, res) => {
   try {
-    // Us subscription ko dhoondein jiske andar yeh split ID ho
     const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
     
     if (!sub) return res.status(404).json({ message: 'Split not found' });
@@ -409,7 +427,6 @@ app.patch('/api/splits/:id/pay', protect, async (req, res) => {
     const friend = sub.sharedWith.id(req.params.id);
     if (!friend) return res.status(404).json({ message: 'Split not found' });
     
-    // Security Check: Kya paid karne wala wahi dost hai?
     if (friend.email !== req.user.email) {
       return res.status(401).json({ message: 'You are not authorized to pay this.' });
     }
