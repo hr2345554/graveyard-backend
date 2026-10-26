@@ -28,7 +28,7 @@ app.use(cors({
     'https://subscription-graveyard-five.vercel.app' // Aapki live site
   ],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -41,7 +41,6 @@ app.use(helmet({
   crossOriginResourcePolicy: false
 }));
 
-// Rate Limit (Proxy issue fixed)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 10000, 
@@ -56,7 +55,6 @@ app.use(express.json({ limit: '10kb' }));
 
 // ==========================================
 // 3. DATABASE CONNECTION (Vercel Serverless Fix)
-// SABSE ZAROORI: Yeh routes se PEHLE hona chahiye!
 // ==========================================
 let cached = global.mongoose;
 
@@ -86,7 +84,6 @@ async function connectDB() {
   return cached.conn;
 }
 
-// Middleware taake har request se pehle DB connect ho
 app.use(async (req, res, next) => {
   try {
     await connectDB();
@@ -133,7 +130,16 @@ const subscriptionSchema = new mongoose.Schema({
   renewalDate: { type: Date },
   notes: { type: String, default: '' },
   cancellationDate: { type: Date },
-  cancellationReason: { type: String, default: '' }
+  cancellationReason: { type: String, default: '' },
+  
+  isWorthIt: { type: Boolean, default: null },
+  lastRatedDate: { type: Date },
+  isShared: { type: Boolean, default: false },
+  sharedWith: [{
+    email: { type: String, required: true },
+    amountOwed: { type: Number, required: true },
+    hasPaid: { type: Boolean, default: false }
+  }]
 }, { timestamps: true });
 
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
@@ -161,7 +167,7 @@ const protect = async (req, res, next) => {
 const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
 // ==========================================
-// 6. AUTH ROUTES (Login/Register)
+// 6. AUTH ROUTES
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   const { name, email, password } = req.body;
@@ -316,9 +322,92 @@ app.delete('/api/subscriptions/:id', protect, async (req, res) => {
 });
 
 // ==========================================
-// 9. SERVER START
+// 9. WORTH IT & SPLIT ROUTES
+// ==========================================
+app.patch('/api/subscriptions/:id/rate', protect, async (req, res) => {
+  try {
+    const { isWorthIt } = req.body;
+    const sub = await Subscription.findById(req.params.id);
+    
+    if (!sub) return res.status(404).json({ message: 'Subscription not found' });
+    if (sub.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
+
+    const updatedSub = await Subscription.findByIdAndUpdate(
+      req.params.id,
+      { isWorthIt, lastRatedDate: new Date() },
+      { new: true }
+    );
+    res.json(updatedSub);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.patch('/api/subscriptions/:id/split', protect, async (req, res) => {
+  try {
+    const { sharedWith } = req.body;
+    const sub = await Subscription.findById(req.params.id);
+    
+    if (!sub) return res.status(404).json({ message: 'Subscription not found' });
+    if (sub.user.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
+
+    const updatedSub = await Subscription.findByIdAndUpdate(
+      req.params.id,
+      { 
+        sharedWith, 
+        isShared: sharedWith && sharedWith.length > 0 
+      },
+      { new: true }
+    );
+    res.json(updatedSub);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ==========================================
+// 🌟 10. VERCEL CRON JOB: SPLIT REMINDER EMAILS
+// ==========================================
+app.get('/api/cron/reminders', async (req, res) => {
+  try {
+    // Sirf Vercel ke cron se request aane dein (Security)
+    if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+       return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    const sharedSubs = await Subscription.find({ isShared: true, status: 'active' });
+    let emailsSent = 0;
+
+    for (const sub of sharedSubs) {
+      for (const friend of sub.sharedWith) {
+        if (!friend.hasPaid) {
+          await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: friend.email,
+            subject: `Reminder: Your share for ${sub.name}`,
+            html: `
+              <div style="font-family: Arial; padding: 20px; text-align: center;">
+                <h2>Subscription Share Reminder</h2>
+                <p>Hi there,</p>
+                <p>Your share of <strong>$${friend.amountOwed}</strong> for <strong>${sub.name}</strong> is pending.</p>
+                <p>Please contact the account owner to pay.</p>
+              </div>
+            `
+          });
+          emailsSent++;
+        }
+      }
+    }
+    res.json({ success: true, emailsSent });
+  } catch (error) {
+    console.error('Cron error:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ==========================================
+// 11. SERVER START
 // ==========================================
 app.get('/', (req, res) => res.send('Graveyard API is running securely!'));
 
-// Vercel ke liye app export karna zaroori hai
 export default app;
