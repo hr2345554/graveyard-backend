@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoSanitize from 'express-mongo-sanitize';
 import nodemailer from 'nodemailer';
+import cookieParser from 'cookie-parser'; // 🌟 COOKIE PARSER
 
 dotenv.config();
 
@@ -27,7 +28,7 @@ app.use(cors({
     'http://127.0.0.1:5173',
     'https://subscription-graveyard-five.vercel.app' // Aapki live site
   ],
-  credentials: true,
+  credentials: true, // 🌟 Cookies allow karne ke liye
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -52,6 +53,7 @@ app.use('/api', limiter);
 
 app.use(mongoSanitize());
 app.use(express.json({ limit: '10kb' }));
+app.use(cookieParser()); // 🌟 COOKIE PARSER MIDDLEWARE
 
 // ==========================================
 // 3. DATABASE CONNECTION (Vercel Serverless Fix)
@@ -143,25 +145,28 @@ const subscriptionSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
+// 🌟 NAYA: Search + Status filter ko fast karne ke liye Database Index
+subscriptionSchema.index({ user: 1, name: 1, status: 1 });
+
 const Subscription = mongoose.model('Subscription', subscriptionSchema);
 
 // ==========================================
 // 5. AUTH MIDDLEWARE
 // ==========================================
 const protect = async (req, res, next) => {
-  let token;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      token = req.headers.authorization.split(' ')[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id).select('-password');
-      next();
-    } catch (error) {
-      res.status(401).json({ message: 'Not authorized, token failed' });
-    }
-  }
+  // 🌟 COOKIE SE TOKEN READ KAR RAHE HAIN
+  const token = req.cookies.token;
+
   if (!token) {
-    res.status(401).json({ message: 'Not authorized, no token' });
+    return res.status(401).json({ message: 'Not authorized, no token' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id).select('-password');
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Not authorized, token failed' });
   }
 };
 
@@ -177,7 +182,17 @@ app.post('/api/auth/register', async (req, res) => {
     if (userExists) return res.status(400).json({ message: 'User already exists' });
     
     const user = await User.create({ name, email, password });
-    res.status(201).json({ _id: user._id, name: user.name, email: user.email, token: generateToken(user._id) });
+    const token = generateToken(user._id);
+
+    // 🌟 COOKIE SET KAR RAHE HAIN
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', 
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      maxAge: 30 * 24 * 60 * 60 * 1000 // 30 din
+    });
+
+    res.status(201).json({ _id: user._id, name: user.name, email: user.email });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -187,17 +202,46 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     const user = await User.findOne({ email });
-    if (user && (await user.matchPassword(password))) {
-      res.json({ _id: user._id, name: user.name, email: user.email, token: generateToken(user._id) });
+    
+    if (!user) {
+      return res.status(404).json({ 
+        message: 'This email is not registered. Please sign up first.', 
+        code: 'EMAIL_NOT_FOUND' 
+      });
+    }
+
+    if (await user.matchPassword(password)) {
+      const token = generateToken(user._id);
+
+      // 🌟 COOKIE SET KAR RAHE HAIN
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 din
+      });
+
+      res.json({ _id: user._id, name: user.name, email: user.email });
     } else {
-      res.status(401).json({ message: 'Invalid email or password' });
+      res.status(401).json({ message: 'Invalid password. Please try again.' });
     }
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// 🌟 NAYA ROUTE: User ko Search karna (Split Modal ke liye)
+// 🌟 LOGOUT ROUTE (Cookie Clear karne ke liye)
+app.post('/api/auth/logout', (req, res) => {
+  res.cookie('token', '', {
+    httpOnly: true,
+    expires: new Date(0),
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  });
+  res.json({ message: 'Logged out successfully' });
+});
+
+// 🌟 User ko Search karna (Split Modal ke liye)
 app.get('/api/auth/search', protect, async (req, res) => {
   try {
     const query = req.query.q;
@@ -208,7 +252,7 @@ app.get('/api/auth/search', protect, async (req, res) => {
         { name: { $regex: query, $options: 'i' } },
         { email: { $regex: query, $options: 'i' } }
       ],
-      _id: { $ne: req.user._id } // Khud ko list se hata dein
+      _id: { $ne: req.user._id }
     }).select('_id name email').limit(5);
 
     res.json(users);
@@ -290,12 +334,47 @@ app.delete('/api/auth/delete-account', protect, async (req, res) => {
 });
 
 // ==========================================
-// 8. SUBSCRIPTION ROUTES
+// 8. SUBSCRIPTION ROUTES (Updated: Search + Status + Pagination)
 // ==========================================
 app.get('/api/subscriptions', protect, async (req, res) => {
   try {
-    const subs = await Subscription.find({ user: req.user._id }).sort({ createdAt: -1 });
-    res.json(subs);
+    // 🌟 Query params read karo
+    const page   = parseInt(req.query.page) || 1;
+    const limit  = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const status = req.query.status || 'active';
+
+    // Base query — sirf apne subscriptions
+    const query = { user: req.user._id };
+
+    // 🌟 Status filter (active / cancelled / paused / all)
+    if (status !== 'all') {
+      query.status = status;
+    }
+
+    // 🌟 Search filter (name + category dono pe)
+    if (search) {
+      query.$or = [
+        { name:     { $regex: search, $options: 'i' } },
+        { category: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    // Total count (pagination ke liye)
+    const total = await Subscription.countDocuments(query);
+
+    // Data fetch (skip + limit)
+    const subs = await Subscription.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({
+      data: subs,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      totalItems: total,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -390,7 +469,6 @@ app.patch('/api/subscriptions/:id/split', protect, async (req, res) => {
 // 🌟 10. SHARED WITH ME ROUTES (FRIEND KE LIYE)
 // ==========================================
 
-// 1. Dost ki list (Jo usko share hui hain)
 app.get('/api/splits/shared-with-me', protect, async (req, res) => {
   try {
     const subs = await Subscription.find({ 'sharedWith.email': req.user.email })
@@ -406,8 +484,8 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
             subscription: sub,
             owner: sub.user,
             amountOwed: friend.amountOwed,
-            status: friend.status, // 🌟 Ab status bhej rahe hain (pending / accepted)
-            hasPaid: friend.hasPaid // 🌟 Payment status
+            status: friend.status,
+            hasPaid: friend.hasPaid
           });
         }
       });
@@ -419,7 +497,6 @@ app.get('/api/splits/shared-with-me', protect, async (req, res) => {
   }
 });
 
-// 2. Accept Invitation
 app.patch('/api/splits/:id/accept', protect, async (req, res) => {
   try {
     const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
@@ -432,7 +509,7 @@ app.patch('/api/splits/:id/accept', protect, async (req, res) => {
       return res.status(401).json({ message: 'Not authorized' });
     }
 
-    friend.status = 'accepted'; // 🌟 Status update
+    friend.status = 'accepted';
     await sub.save();
     
     res.json({ message: 'Accepted successfully', friend });
@@ -441,7 +518,6 @@ app.patch('/api/splits/:id/accept', protect, async (req, res) => {
   }
 });
 
-// 3. Pay Now button (Paid mark karna)
 app.patch('/api/splits/:id/pay', protect, async (req, res) => {
   try {
     const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
@@ -464,7 +540,6 @@ app.patch('/api/splits/:id/pay', protect, async (req, res) => {
   }
 });
 
-// 🌟 4. REMOVE / LEAVE SPLIT (Owner ya Friend dono kar sakte hain)
 app.delete('/api/splits/:id', protect, async (req, res) => {
   try {
     const sub = await Subscription.findOne({ 'sharedWith._id': req.params.id });
@@ -473,7 +548,6 @@ app.delete('/api/splits/:id', protect, async (req, res) => {
     const friend = sub.sharedWith.id(req.params.id);
     if (!friend) return res.status(404).json({ message: 'Split not found' });
     
-    // Check karein ke request bhejne wala Owner hai ya khud Friend
     const isOwner = sub.user.toString() === req.user._id.toString();
     const isFriend = friend.email === req.user.email;
 
@@ -481,10 +555,8 @@ app.delete('/api/splits/:id', protect, async (req, res) => {
       return res.status(401).json({ message: 'Not authorized to remove this.' });
     }
 
-    // Array se remove karein
     sub.sharedWith.pull({ _id: req.params.id });
     
-    // Agar koi dost nahi bacha, toh isShared false kar dein
     if (sub.sharedWith.length === 0) {
       sub.isShared = false;
     }
