@@ -203,11 +203,9 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const user = await User.findOne({ email });
     
+    // 🌟 FIX: Agar user nahi mila, toh generic error bhejo (Security Fix)
     if (!user) {
-      return res.status(404).json({ 
-        message: 'This email is not registered. Please sign up first.', 
-        code: 'EMAIL_NOT_FOUND' 
-      });
+      return res.status(401).json({ message: 'Invalid email or password.' });
     }
 
     if (await user.matchPassword(password)) {
@@ -223,7 +221,8 @@ app.post('/api/auth/login', async (req, res) => {
 
       res.json({ _id: user._id, name: user.name, email: user.email });
     } else {
-      res.status(401).json({ message: 'Invalid password. Please try again.' });
+      // 🌟 FIX: Password galat ho toh bhi wahi generic error bhejo
+      res.status(401).json({ message: 'Invalid email or password.' });
     }
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -276,7 +275,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   try {
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: 'Yeh email registered nahi hai.' });
+    
+    // 🌟 FIX: Security - Agar user nahi hai, toh bhi success message bhejo taake hacker email enumerate na kar sake
+    if (!user) {
+      return res.json({ message: 'If an account exists with this email, a reset code has been sent.' });
+    }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     user.resetCode = code;
@@ -297,7 +300,8 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       `
     });
 
-    res.json({ message: 'Code email par bhej diya gaya hai.' });
+    // 🌟 FIX: Generic success message
+    res.json({ message: 'If an account exists with this email, a reset code has been sent.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
